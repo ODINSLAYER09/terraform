@@ -1,0 +1,5 @@
+**/.terraform/
+*.tfstate
+*.tfstate.*
+# tfstates can have secret data, sensitive information, and private keys. Ignore them in case they are accidentally committed.
+**/keys.*

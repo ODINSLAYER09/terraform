@@ -1,0 +1,430 @@
+LEGOform
+Brick by brick, module by module
+
+Goal
+
+Refactor a static configuration into a production-grade, modular system that integrates local logic with community-built modules from the Terraform Registry.
+
+Instructions
+
+The Local Module: Create a local module in ./modules/storage_account. This module should deploy an Azure Storage Account with variables for account_name, location, and account_tier.
+
+The Registry Integration: In your root main.tf, use the official Azure Verified VNet Module from the Terraform Registry to deploy a Virtual Network.
+
+The Factory: In your root main.tf, call your local storage module twice—once for a "Logging" account and once for a "Data" account.
+
+The Export: Define an output in your root main.tf that displays the resource_id (from the Registry module) and the primary_blob_endpoint for both storage accounts (from your local module).
+
+The Environments: Create a configs folder with dev.tfvars (Standard tier) and prod.tfvars (Premium tier).
+
+The Test: Deploy the "dev" configuration using the var-file flag.
+
+Submission
+
+Submit a screenshot of your folder structure in VS Code and the terminal output showing the "Outputs" (VNet ID and the two blob endpoints) after your successful dev apply.
+
+SOLUTION:
+Step 1: Create the Project Structure
+First, you need to understand the folder structure. In Terraform, modules are simply folders containing .tf files:
+
+ex2_terraform_modules/
+├── main.tf              # Root configuration - where you call modules
+├── variables.tf         # Root variables - inputs for the whole project
+├── outputs.tf           # Root outputs - what you want to see after deployment
+├── configs/             # Environment-specific variable values
+│   ├── dev.tfvars       # Development environment settings
+│   └── prod.tfvars      # Production environment settings
+└── modules/             # Your local reusable modules
+    └── storage_account/ # One module = one folder
+        ├── main.tf      # Module's resources
+        ├── variables.tf # Module's inputs (parameters)
+        └── outputs.tf   # Module's outputs (return values)
+Key insight: The modules/storage_account/ folder has the same file structure as the root folder (main.tf, variables.tf, outputs.tf). That's because a module is just a mini-Terraform project that you can call from another project.
+
+Create the directories:
+
+mkdir -p ex2_terraform_modules/modules/storage_account
+mkdir -p ex2_terraform_modules/configs
+cd ex2_terraform_modules
+Step 2: Create the Local Storage Account Module
+Now you will create your first local module. This module will be a reusable "recipe" for creating Azure Storage Accounts. You will call this module twice - once for logging and once for data storage.
+
+Why create a module for this?
+
+Storage accounts require the same configuration every time (name, location, tier, replication). Instead of writing this code twice (or ten times), you write it once in a module and call it with different parameters.
+
+File 1: modules/storage_account/variables.tf
+This file defines the inputs (parameters) that your module accepts. Think of these as the "holes" that need to be filled when someone uses your module.
+
+# The name of the storage account
+# Azure requires storage account names to be globally unique across all Azure
+variable "account_name" {
+  description = "Name of the storage account (must be globally unique)"
+  type        = string
+}
+
+# Where to create the storage account (e.g., "germanywestcentral")
+variable "location" {
+  description = "Azure region for the storage account"
+  type        = string
+}
+
+# The resource group that will contain this storage account
+variable "resource_group_name" {
+  description = "Name of the resource group"
+  type        = string
+}
+
+# Performance tier - Standard uses HDDs (cheaper), Premium uses SSDs (faster)
+# Default is "Standard" - if caller doesn't specify, this value is used
+variable "account_tier" {
+  description = "Performance tier: Standard or Premium"
+  type        = string
+  default     = "Standard"
+}
+Notice: Every variable has a description - this is documentation for anyone using your module. The account_tier variable has a default value, making it optional when calling the module.
+
+File 2: modules/storage_account/main.tf
+This file contains the actual resource that the module creates. It uses the variables defined above.
+
+# Create an Azure Storage Account
+# This is the only resource in this module
+resource "azurerm_storage_account" "storage" {
+  # Use the values passed in through variables
+  name                     = var.account_name
+  resource_group_name      = var.resource_group_name
+  location                 = var.location
+  account_tier             = var.account_tier
+
+  # LRS = Locally Redundant Storage (3 copies in same datacenter)
+  # This is the cheapest option - good for dev/test environments
+  account_replication_type = "LRS"
+
+  # Tags help you organize and identify resources in Azure Portal
+  tags = {
+    Environment = "Terraform Modules Exercise"
+  }
+}
+Key point: Notice how we use var.account_name instead of hardcoding a name. This is what makes the module reusable - each time you call it, you can pass a different name.
+
+File 3: modules/storage_account/outputs.tf
+This file defines what values the module returns after creating the resource. Think of these as the "results" that the caller can use.
+
+# Return the blob storage endpoint URL
+# Example: "https://mystorageaccount.blob.core.windows.net/"
+# The caller might need this URL to configure other resources
+output "primary_blob_endpoint" {
+  description = "The primary blob endpoint URL"
+  value       = azurerm_storage_account.storage.primary_blob_endpoint
+}
+
+# Return the full Azure resource ID
+# Example: "/subscriptions/.../storageAccounts/mystorageaccount"
+# Useful for referencing this storage account from other resources
+output "storage_account_id" {
+  description = "The ID of the storage account"
+  value       = azurerm_storage_account.storage.id
+}
+Why outputs matter: After you call a module, you might need to know something about the created resource (like its URL or ID). Outputs let you "export" this information back to the caller.
+
+Step 3: Create the Root Configuration
+Now you will create the root configuration - this is the "main" Terraform project that calls your modules. Think of it as the "orchestrator" that brings everything together.
+
+File 1: variables.tf (root)
+These are the inputs for your entire project. Some will be passed to the modules.
+
+# Azure region where all resources will be created
+# Default is Germany West Central - change if needed
+variable "location" {
+  description = "Azure region for resources"
+  type        = string
+  default     = "germanywestcentral"
+}
+
+# Performance tier for storage accounts
+# This value will be passed to both storage modules
+variable "account_tier" {
+  description = "Storage account tier: Standard or Premium"
+  type        = string
+  default     = "Standard"
+}
+
+# Name for the first storage account (logging)
+# No default - must be provided when running terraform apply
+variable "logging_storage_name" {
+  description = "Name for the logging storage account"
+  type        = string
+}
+
+# Name for the second storage account (data)
+# No default - must be provided when running terraform apply
+variable "data_storage_name" {
+  description = "Name for the data storage account"
+  type        = string
+}
+Key insight: Variables without defaults (logging_storage_name, data_storage_name) MUST be provided. You will provide them via .tfvars files.
+
+File 2: main.tf (root)
+This is the heart of your configuration. It creates resources directly AND calls modules.
+
+# ============================================================
+# TERRAFORM CONFIGURATION BLOCK
+# Specifies which providers and versions this project needs
+# ============================================================
+terraform {
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"  # Download from HashiCorp's registry
+      version = "~> 4.0"              # Use version 4.x (but not 5.x)
+    }
+  }
+  required_version = ">= 1.9.0"       # Minimum Terraform CLI version
+}
+
+# ============================================================
+# PROVIDER CONFIGURATION
+# Configures how Terraform connects to Azure
+# ============================================================
+provider "azurerm" {
+  features {}  # Required block, even if empty
+  # Authentication happens via Azure CLI (az login) - no credentials here
+}
+
+# ============================================================
+# RESOURCE GROUP
+# A container for all Azure resources in this project
+# ============================================================
+resource "azurerm_resource_group" "rg" {
+  name     = "ModulesExerciseRG"
+  location = var.location
+}
+
+# ============================================================
+# REGISTRY MODULE: VIRTUAL NETWORK
+# Using a pre-built module from Terraform Registry instead of
+# writing all the VNet configuration ourselves
+# ============================================================
+# Azure Verified Modules (AVM) are official modules maintained by Microsoft
+# Find them at: https://registry.terraform.io/namespaces/Azure
+module "vnet" {
+  # source = "NAMESPACE/MODULE_NAME/PROVIDER"
+  source  = "Azure/avm-res-network-virtualnetwork/azurerm"
+  version = "0.17.0"  # Always pin the version for reproducibility
+
+  # Module inputs - check the module's documentation for available options
+  name          = "ModuleVNet"
+  location      = azurerm_resource_group.rg.location  # Reference the RG we created
+  parent_id     = azurerm_resource_group.rg.id        # The RG's resource ID
+  address_space = ["10.0.0.0/16"]                     # IP range for the VNet
+
+  # Subnets are defined as a map of objects
+  subnets = {
+    "default" = {
+      name             = "default"
+      address_prefixes = ["10.0.1.0/24"]  # Subnet IP range (subset of VNet)
+    }
+  }
+
+  tags = {
+    Environment = "Terraform Modules Exercise"
+  }
+}
+
+# ============================================================
+# LOCAL MODULE CALL #1: LOGGING STORAGE
+# Using our custom module to create the first storage account
+# ============================================================
+module "logging_storage" {
+  # source = relative path to the module folder
+  source = "./modules/storage_account"
+
+  # Pass values to the module's variables
+  account_name        = var.logging_storage_name      # From root variable
+  location            = var.location                   # From root variable
+  resource_group_name = azurerm_resource_group.rg.name # From resource we created
+  account_tier        = var.account_tier               # From root variable
+}
+
+# ============================================================
+# LOCAL MODULE CALL #2: DATA STORAGE
+# Same module, different parameters = different storage account
+# ============================================================
+module "data_storage" {
+  source = "./modules/storage_account"
+
+  # Different name, but same location, RG, and tier
+  account_name        = var.data_storage_name
+  location            = var.location
+  resource_group_name = azurerm_resource_group.rg.name
+  account_tier        = var.account_tier
+}
+The "Factory" pattern: Notice how we call ./modules/storage_account twice with different account_name values. Each call creates a separate, independent storage account. This is the power of modules - write once, use many times.
+
+File 3: outputs.tf (root)
+These outputs will be displayed after terraform apply completes.
+
+# Output the VNet's resource ID from the Registry module
+# module.vnet.resource_id refers to the output defined IN the registry module
+output "vnet_id" {
+  description = "The ID of the Virtual Network"
+  value       = module.vnet.resource_id
+}
+
+# Output from our first local module call
+# module.logging_storage.primary_blob_endpoint refers to the output
+# we defined in modules/storage_account/outputs.tf
+output "logging_blob_endpoint" {
+  description = "Primary blob endpoint for logging storage"
+  value       = module.logging_storage.primary_blob_endpoint
+}
+
+# Output from our second local module call
+output "data_blob_endpoint" {
+  description = "Primary blob endpoint for data storage"
+  value       = module.data_storage.primary_blob_endpoint
+}
+How to read module outputs: The syntax is module.<MODULE_NAME>.<OUTPUT_NAME>. For example, module.logging_storage.primary_blob_endpoint means "get the primary_blob_endpoint output from the module we called logging_storage".
+
+Step 4: Create Environment Configuration Files
+Now you will create .tfvars files for different environments. This is how you manage multiple environments (dev, staging, prod) with the same Terraform code.
+
+Why separate files?
+
+Development environment: Use cheap "Standard" tier storage
+
+Production environment: Use fast "Premium" tier storage
+
+Same code, different configuration!
+
+File 1: configs/dev.tfvars
+This file contains values for the development environment:
+
+# Development uses Standard tier (cheaper, slower)
+account_tier         = "Standard"
+
+# Storage account names - must be globally unique!
+# Replace "yourinitials" with YOUR actual initials + random numbers
+logging_storage_name = "yourinitialsdevlog123"
+data_storage_name    = "yourinitialsdevdata123"
+File 2: configs/prod.tfvars
+This file contains values for the production environment:
+
+# Production uses Premium tier (faster, more expensive)
+account_tier         = "Premium"
+
+# Different names for production accounts
+logging_storage_name = "yourinitialsprodlog123"
+data_storage_name    = "yourinitialsproddata123"
+Important: Replace yourinitials with your actual initials and unique numbers. Storage account names must be globally unique across all of Azure, 3-24 characters, lowercase letters and numbers only.
+
+Step 5: Initialize Terraform
+Run terraform init to:
+
+Download the Azure provider plugin
+
+Download the Registry module (VNet)
+
+Initialize your local modules
+
+terraform init
+You should see output showing the modules being downloaded:
+
+Initializing the backend...
+Initializing modules...
+Downloading registry.terraform.io/Azure/avm-res-network-virtualnetwork/azurerm 0.17.0 for vnet...
+- vnet in .terraform/modules/vnet
+- logging_storage in modules/storage_account
+- data_storage in modules/storage_account
+
+Initializing provider plugins...
+- Finding hashicorp/azurerm versions matching "~> 4.0"...
+- Installing hashicorp/azurerm v4.x.x...
+
+Terraform has been successfully initialized!
+Notice: Registry modules are downloaded to .terraform/modules/. Your local modules are just referenced by path.
+
+Step 6: Deploy the Dev Environment
+Now deploy using the dev configuration file. The -var-file flag tells Terraform which values to use:
+
+terraform apply -var-file=configs/dev.tfvars
+Terraform will show you a plan of what it will create:
+
+Terraform will perform the following actions:
+
+  # azurerm_resource_group.rg will be created
+  # module.vnet.azurerm_virtual_network.this will be created
+  # module.vnet.azurerm_subnet.this["default"] will be created
+  # module.logging_storage.azurerm_storage_account.storage will be created
+  # module.data_storage.azurerm_storage_account.storage will be created
+
+Plan: 5 to add, 0 to change, 0 to destroy.
+What you see:
+
+1 resource group (created directly in root main.tf)
+
+1 virtual network + 1 subnet (created by the Registry module)
+
+2 storage accounts (created by your local module, called twice)
+
+Type yes to confirm and create the resources.
+
+Step 7: Review the Outputs
+After successful deployment, you should see your defined outputs:
+
+Apply complete! Resources: 5 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+data_blob_endpoint = "https://yourinitialsdevdata123.blob.core.windows.net/"
+logging_blob_endpoint = "https://yourinitialsdevlog123.blob.core.windows.net/"
+vnet_id = "/subscriptions/.../resourceGroups/ModulesExerciseRG/providers/Microsoft.Network/virtualNetworks/ModuleVNet"
+These outputs came from:
+
+vnet_id - from the Registry module's resource_id output
+
+logging_blob_endpoint - from your local module's primary_blob_endpoint output (first call)
+
+data_blob_endpoint - from your local module's primary_blob_endpoint output (second call)
+
+Take a screenshot of this output for your submission.
+
+What You Learned
+In this exercise, you learned these key concepts:
+
+1. Local Modules
+Reusable code stored in your project. Referenced by path:
+
+module "my_module" {
+  source = "./modules/storage_account"
+}
+2. Registry Modules
+Pre-built modules from the Terraform Registry. We use Azure Verified Modules (AVM) - the official modules maintained by Microsoft:
+
+module "vnet" {
+  source  = "Azure/avm-res-network-virtualnetwork/azurerm"
+  version = "0.17.0"  # Always pin versions!
+}
+3. Module Inputs and Outputs
+Inputs (variables.tf): Parameters you pass TO the module
+
+Outputs (outputs.tf): Values you get BACK from the module
+
+Access outputs with: module.<name>.<output>
+
+4. The Factory Pattern
+Call the same module multiple times with different parameters. Each call creates independent resources.
+
+5. Environment Configuration
+Use different .tfvars files for different environments. Apply with -var-file flag.
+
+Submission
+Submit:
+
+A screenshot of your folder structure in VS Code
+
+A screenshot of the terminal showing the Outputs after terraform apply -var-file=configs/dev.tfvars
+
+Cleanup
+When finished, destroy the resources to avoid Azure charges:
+
+terraform destroy -var-file=configs/dev.tfvars
